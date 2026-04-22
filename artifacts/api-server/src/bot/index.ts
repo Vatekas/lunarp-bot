@@ -308,12 +308,19 @@ async function handleReviewModal(interaction: import("discord.js").ModalSubmitIn
     return;
   }
 
-  await webhookClient.send({ embeds: [embed] });
+  // Reply first — if another bot instance already handled this interaction, this will throw
+  // and we exit early, preventing double review embeds
+  try {
+    await interaction.reply({
+      content: `✅ Ačiū! Jūsų atsiliepimas apie **${adminName}** sėkmingai išsiųstas!`,
+      ephemeral: true,
+    });
+  } catch {
+    return;
+  }
 
-  await interaction.reply({
-    content: `✅ Ačiū! Jūsų atsiliepimas apie **${adminName}** sėkmingai išsiųstas!`,
-    ephemeral: true,
-  });
+  // Only reaches here if we won the race — now send the review and new panel
+  await webhookClient.send({ embeds: [embed] });
 
   await interaction.followUp({
     embeds: [buildPanelEmbed()],
