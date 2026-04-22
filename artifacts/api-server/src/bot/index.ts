@@ -13,6 +13,7 @@ import {
   Events,
   GuildMember,
   TextChannel,
+  WebhookClient,
 } from "discord.js";
 import { logger } from "../lib/logger";
 
@@ -37,8 +38,11 @@ const STAR_LABELS: Record<string, string> = {
   "5": "⭐⭐⭐⭐⭐ 5 Žvaigždutės — Puikiai",
 };
 
-// Stored at startup — we know this works because postReviewPanel succeeds
+// Stored at startup — used for posting the panel
 let cachedReviewChannel: TextChannel | null = null;
+
+// Webhook used for sending review embeds (bypasses channel permission issues)
+let webhookClient: WebhookClient | null = null;
 
 export function startBot() {
   const token = process.env["DISCORD_BOT_TOKEN"];
@@ -57,6 +61,15 @@ export function startBot() {
 
   client.once(Events.ClientReady, async (readyClient) => {
     logger.info({ tag: readyClient.user.tag }, "Discord bot is ready");
+
+    const webhookUrl = process.env["DISCORD_WEBHOOK_URL"];
+    if (webhookUrl) {
+      webhookClient = new WebhookClient({ url: webhookUrl });
+      logger.info("Webhook client initialized");
+    } else {
+      logger.warn("DISCORD_WEBHOOK_URL not set — reviews will fail");
+    }
+
     await initChannel(readyClient);
     await postReviewPanel();
   });
@@ -115,8 +128,8 @@ async function initChannel(client: Client) {
 }
 
 async function postReviewPanel() {
-  if (!cachedReviewChannel) {
-    logger.error("Cannot post panel — review channel not cached");
+  if (!cachedReviewChannel && !webhookClient) {
+    logger.error("Cannot post panel — no channel or webhook available");
     return;
   }
   try {
@@ -140,7 +153,12 @@ async function postReviewPanel() {
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(button);
 
-    await cachedReviewChannel.send({ embeds: [embed], components: [row] });
+    // Try webhook first, fall back to cached channel
+    if (webhookClient) {
+      await webhookClient.send({ embeds: [embed], components: [row] });
+    } else {
+      await cachedReviewChannel!.send({ embeds: [embed], components: [row] });
+    }
     logger.info("Review panel posted successfully");
   } catch (err) {
     logger.error({ err }, "Failed to post review panel");
@@ -291,13 +309,13 @@ async function handleReviewModal(interaction: import("discord.js").ModalSubmitIn
     .setColor(rating >= 4 ? 0x57f287 : rating === 3 ? 0xfee75c : 0xed4245)
     .setTimestamp();
 
-  // Use the cached channel we know works (same one used to post the panel)
-  if (!cachedReviewChannel) {
-    await interaction.reply({ content: "Klaida: kanalas nerastas.", ephemeral: true });
+  // Send via webhook (bypasses channel permission restrictions)
+  if (!webhookClient) {
+    await interaction.reply({ content: "Klaida: webhook nerastas. Kreipkitės į administratorių.", ephemeral: true });
     return;
   }
 
-  await cachedReviewChannel.send({ embeds: [embed] });
+  await webhookClient.send({ embeds: [embed] });
 
   await interaction.reply({
     content: `✅ Ačiū! Jūsų atsiliepimas apie **${adminName}** sėkmingai išsiųstas!`,
