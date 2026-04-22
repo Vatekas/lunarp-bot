@@ -115,15 +115,6 @@ async function postReviewPanel(client: Client) {
       return;
     }
 
-    const existing = await (channel as import("discord.js").TextChannel).messages.fetch({ limit: 10 });
-    const botMsg = existing.find(
-      (m) => m.author.id === client.user!.id && m.embeds.length > 0
-    );
-    if (botMsg) {
-      logger.info("Review panel already posted, skipping");
-      return;
-    }
-
     const embed = new EmbedBuilder()
       .setTitle("Administracijos Atsiliepimai")
       .setDescription(
