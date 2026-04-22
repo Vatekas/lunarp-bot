@@ -36,6 +36,7 @@ export function startBot() {
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMembers,
       GatewayIntentBits.GuildMessages,
     ],
   });
@@ -53,9 +54,9 @@ export function startBot() {
         return;
       }
 
-      // Step 2: Admin name modal submit → show rating dropdown
-      if (interaction.isModalSubmit() && interaction.customId === "admin_name_modal") {
-        await handleAdminNameModal(interaction);
+      // Step 2: Admin selected from dropdown → show rating dropdown
+      if (interaction.isStringSelectMenu() && interaction.customId === "select_admin") {
+        await handleSelectAdmin(interaction);
         return;
       }
 
@@ -131,35 +132,85 @@ async function postReviewPanel(client: Client) {
   }
 }
 
-// Step 1: Show modal where user types the admin's nick
+const ADMIN_ROLES = [
+  "Įkūrėjas",
+  "Co.Savininkas",
+  "Developeris",
+  "Team Lead",
+  "Vyr. Administratorius (-ė)",
+  "Administratorius (-ė)",
+  "Moderatorius (-ė)",
+];
+
+// Step 1: Fetch members with admin roles → show dropdown
 async function handleStartReview(interaction: import("discord.js").ButtonInteraction) {
-  const modal = new ModalBuilder()
-    .setCustomId("admin_name_modal")
-    .setTitle("1/3: Pasirinkite administratorių");
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({ content: "Klaida: serveris nerastas.", ephemeral: true });
+    return;
+  }
 
-  const adminInput = new TextInputBuilder()
-    .setCustomId("admin_name")
-    .setLabel("Administratoriaus nickname")
-    .setPlaceholder("Įrašykite administratoriaus Discord vardą...")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setMinLength(1)
-    .setMaxLength(64);
+  await interaction.deferReply({ ephemeral: true });
 
-  const row = new ActionRowBuilder<TextInputBuilder>().addComponents(adminInput);
-  modal.addComponents(row);
+  // Fetch all guild members via REST
+  const allMembers = await guild.members.fetch();
 
-  await interaction.showModal(modal);
+  const seen = new Set<string>();
+  const adminMembers: { id: string; name: string }[] = [];
+
+  for (const [, member] of allMembers) {
+    if (seen.has(member.id)) continue;
+    const hasRole = member.roles.cache.some((r) =>
+      ADMIN_ROLES.some((name) => r.name.trim() === name.trim())
+    );
+    if (hasRole) {
+      seen.add(member.id);
+      adminMembers.push({ id: member.id, name: member.displayName });
+    }
+  }
+
+  if (adminMembers.length === 0) {
+    await interaction.editReply({
+      content: "Nerasta jokių administratorių. Įsitikinkite, kad Developer Portal įjungtas **SERVER MEMBERS INTENT**.",
+    });
+    return;
+  }
+
+  const options = adminMembers.slice(0, 25).map((m) =>
+    new StringSelectMenuOptionBuilder()
+      .setLabel(m.name)
+      .setValue(m.id)
+  );
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("select_admin")
+    .setPlaceholder("Pasirinkite administratorių")
+    .addOptions(options);
+
+  const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+
+  await interaction.editReply({
+    content: "**1/3:** Pasirinkite administratorių, kurį norite įvertinti:",
+    components: [row],
+  });
 }
 
-// Step 2: After admin name entered → show rating dropdown
-async function handleAdminNameModal(interaction: import("discord.js").ModalSubmitInteraction) {
-  const adminName = interaction.fields.getTextInputValue("admin_name").trim();
+// Step 2: Admin selected → show rating dropdown
+async function handleSelectAdmin(interaction: import("discord.js").StringSelectMenuInteraction) {
+  const adminId = interaction.values[0]!;
+  const guild = interaction.guild;
+  if (!guild) return;
+
+  let adminName = adminId;
+  try {
+    const member = guild.members.cache.get(adminId);
+    adminName = member?.displayName ?? adminId;
+  } catch {}
 
   const options = [1, 2, 3, 4, 5].map((n) =>
     new StringSelectMenuOptionBuilder()
       .setLabel(STAR_LABELS[String(n)] ?? `${n} žvaigždutės`)
-      .setValue(`${encodeURIComponent(adminName)}__${n}`)
+      .setValue(`${adminId}:${n}`)
   );
 
   const select = new StringSelectMenuBuilder()
@@ -169,23 +220,26 @@ async function handleAdminNameModal(interaction: import("discord.js").ModalSubmi
 
   const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
 
-  await interaction.reply({
+  await interaction.update({
     content: `**2/3:** Kaip įvertintumėte **${adminName}**?`,
     components: [row],
-    ephemeral: true,
   });
 }
 
 // Step 3: After rating selected → show review text modal
+// value format: "adminId:rating" (colon separated, safe since snowflake IDs are digits only)
 async function handleSelectRating(interaction: import("discord.js").StringSelectMenuInteraction) {
   const value = interaction.values[0]!;
-  const separatorIdx = value.lastIndexOf("__");
-  const adminNameEncoded = value.substring(0, separatorIdx);
-  const rating = value.substring(separatorIdx + 2);
-  const adminName = decodeURIComponent(adminNameEncoded);
+  const [adminId, rating] = value.split(":");
+  const guild = interaction.guild;
+  let adminName = adminId ?? "Administratorius";
+  if (guild && adminId) {
+    const member = guild.members.cache.get(adminId);
+    adminName = member?.displayName ?? adminName;
+  }
 
   const modal = new ModalBuilder()
-    .setCustomId(`review_modal_${adminNameEncoded}__${rating}`)
+    .setCustomId(`review_modal_${adminId}:${rating}`)
     .setTitle("Palikite Atsiliepimą");
 
   const textInput = new TextInputBuilder()
@@ -206,10 +260,15 @@ async function handleSelectRating(interaction: import("discord.js").StringSelect
 // Step 4: Review text submitted → send embed to channel
 async function handleReviewModal(interaction: import("discord.js").ModalSubmitInteraction) {
   const withoutPrefix = interaction.customId.replace("review_modal_", "");
-  const separatorIdx = withoutPrefix.lastIndexOf("__");
-  const adminNameEncoded = withoutPrefix.substring(0, separatorIdx);
-  const adminName = decodeURIComponent(adminNameEncoded);
-  const rating = Number(withoutPrefix.substring(separatorIdx + 2));
+  const [adminId, ratingStr] = withoutPrefix.split(":");
+  const rating = Number(ratingStr);
+
+  const guild = interaction.guild;
+  let adminName = adminId ?? "Administratorius";
+  if (guild && adminId) {
+    const member = guild.members.cache.get(adminId);
+    adminName = member?.displayName ?? adminName;
+  }
 
   const reviewText = interaction.fields.getTextInputValue("review_text");
   const reviewer = interaction.member as GuildMember | null;
@@ -222,13 +281,12 @@ async function handleReviewModal(interaction: import("discord.js").ModalSubmitIn
     .setDescription(reviewText)
     .addFields(
       { name: "Įvertinimas", value: `${stars} (${rating}/5)`, inline: true },
-      { name: "Administratorius", value: adminName, inline: true },
+      { name: "Administratorius", value: `<@${adminId}>`, inline: true },
       { name: "Atsiliepimą paliko", value: reviewerName, inline: true }
     )
     .setColor(rating >= 4 ? 0x57f287 : rating === 3 ? 0xfee75c : 0xed4245)
     .setTimestamp();
 
-  const guild = interaction.guild;
   if (!guild) return;
 
   const channel = await guild.channels.fetch(REVIEW_CHANNEL_ID);
