@@ -133,13 +133,13 @@ async function postReviewPanel(client: Client) {
 }
 
 const ADMIN_ROLES = [
-  "Įkūrėjas",
-  "Co.Savininkas",
-  "Developeris",
-  "Team Lead",
-  "Vyr. Administratorius (-ė)",
-  "Administratorius (-ė)",
-  "Moderatorius (-ė)",
+  "┋ Įkūrėjas",
+  "┋Co.Savininkas",
+  "┋Developeris",
+  "┋Team Lead",
+  "┋Vyr. Administratorius (-ė)",
+  "┋Administratorius (-ė)",
+  "┋Moderatorius (-ė)",
 ];
 
 // Step 1: Fetch members with admin roles → show dropdown
