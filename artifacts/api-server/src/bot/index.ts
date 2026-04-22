@@ -155,11 +155,14 @@ async function handleStartReview(interaction: import("discord.js").ButtonInterac
   // Fetch all guild members via REST
   const allMembers = await guild.members.fetch();
 
+  logger.info({ memberCount: allMembers.size }, "Fetched guild members");
+
   const seen = new Set<string>();
   const adminMembers: { id: string; name: string }[] = [];
 
   for (const [, member] of allMembers) {
     if (seen.has(member.id)) continue;
+    const roleNames = member.roles.cache.map((r) => r.name);
     const hasRole = member.roles.cache.some((r) =>
       ADMIN_ROLES.some((name) => r.name.trim() === name.trim())
     );
@@ -167,9 +170,17 @@ async function handleStartReview(interaction: import("discord.js").ButtonInterac
       seen.add(member.id);
       adminMembers.push({ id: member.id, name: member.displayName });
     }
+    if (roleNames.length > 1) {
+      logger.info({ member: member.displayName, roles: roleNames }, "Member roles");
+    }
   }
 
+  logger.info({ adminCount: adminMembers.length }, "Admin members found");
+
   if (adminMembers.length === 0) {
+    // Show all role names found for debugging
+    const allRoleNames = guild.roles.cache.map((r) => r.name);
+    logger.info({ allRoles: allRoleNames }, "All guild roles");
     await interaction.editReply({
       content: "Nerasta jokių administratorių. Įsitikinkite, kad Developer Portal įjungtas **SERVER MEMBERS INTENT**.",
     });
