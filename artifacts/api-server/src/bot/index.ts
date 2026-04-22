@@ -101,9 +101,11 @@ export function startBot() {
     try {
       // Slash command: /postpanel — posts the panel in current channel
       if (interaction.isChatInputCommand() && interaction.commandName === "postpanel") {
-        await interaction.reply({
+        await interaction.reply({ content: "✅", ephemeral: true });
+        await interaction.followUp({
           embeds: [buildPanelEmbed()],
           components: [buildPanelRow()],
+          ephemeral: false,
         });
         return;
       }
