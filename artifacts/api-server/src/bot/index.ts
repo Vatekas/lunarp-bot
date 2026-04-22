@@ -314,4 +314,10 @@ async function handleReviewModal(interaction: import("discord.js").ModalSubmitIn
     content: `✅ Ačiū! Jūsų atsiliepimas apie **${adminName}** sėkmingai išsiųstas!`,
     ephemeral: true,
   });
+
+  await interaction.followUp({
+    embeds: [buildPanelEmbed()],
+    components: [buildPanelRow()],
+    ephemeral: false,
+  });
 }
