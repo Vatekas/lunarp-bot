@@ -102,8 +102,9 @@ export function startBot() {
       // Slash command: /postpanel — posts the panel in current channel
       if (interaction.isChatInputCommand() && interaction.commandName === "postpanel") {
         await interaction.reply({ content: "✅", ephemeral: true });
-        if (webhookClient) {
-          await webhookClient.send({
+        const panelChannel = await interaction.client.channels.fetch("1490789916995621050");
+        if (panelChannel && panelChannel.isTextBased() && "send" in panelChannel) {
+          await (panelChannel as import("discord.js").TextChannel).send({
             embeds: [buildPanelEmbed()],
             components: [buildPanelRow()],
           });
