@@ -12,13 +12,14 @@ import {
   EmbedBuilder,
   Events,
   GuildMember,
-  TextChannel,
   WebhookClient,
+  REST,
+  Routes,
+  SlashCommandBuilder,
 } from "discord.js";
 import { logger } from "../lib/logger";
 
 const GUILD_ID = "1455214577334751428";
-const REVIEW_CHANNEL_ID = "1490789916995621050";
 
 const ADMIN_ROLES = [
   "┋ Įkūrėjas",
@@ -38,17 +39,44 @@ const STAR_LABELS: Record<string, string> = {
   "5": "⭐⭐⭐⭐⭐ 5 Žvaigždutės — Puikiai",
 };
 
-// Stored at startup — used for posting the panel
-let cachedReviewChannel: TextChannel | null = null;
-
-// Webhook used for sending review embeds (bypasses channel permission issues)
 let webhookClient: WebhookClient | null = null;
+
+function buildPanelEmbed() {
+  return new EmbedBuilder()
+    .setTitle("Administracijos Atsiliepimai")
+    .setDescription(
+      "Pasidalinkite savo atsiliepimu apie serverio administraciją!\n\n*Visi atsiliepimai padeda mums tobulėti!*"
+    )
+    .addFields({
+      name: "Kaip tai veikia:",
+      value:
+        "**1** Paspauskite mygtuką žemiau\n**2** Pasirinkite administratorių\n**3** Įvertinkite 1–5 žvaigždutėmis\n**4** Parašykite savo atsiliepimą",
+    })
+    .setFooter({ text: "Su pagarba, LUNARP.LT Serverio Administracija" })
+    .setColor(0x5865f2);
+}
+
+function buildPanelRow() {
+  const button = new ButtonBuilder()
+    .setCustomId("start_review")
+    .setLabel("Palikti admin atsiliepimą")
+    .setStyle(ButtonStyle.Primary);
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(button);
+}
 
 export function startBot() {
   const token = process.env["DISCORD_BOT_TOKEN"];
   if (!token) {
     logger.error("DISCORD_BOT_TOKEN is not set");
     return;
+  }
+
+  const webhookUrl = process.env["DISCORD_WEBHOOK_URL"];
+  if (webhookUrl) {
+    webhookClient = new WebhookClient({ url: webhookUrl });
+    logger.info("Webhook client initialized");
+  } else {
+    logger.warn("DISCORD_WEBHOOK_URL not set — reviews will fail");
   }
 
   const client = new Client({
@@ -61,33 +89,39 @@ export function startBot() {
 
   client.once(Events.ClientReady, async (readyClient) => {
     logger.info({ tag: readyClient.user.tag }, "Discord bot is ready");
-
-    const webhookUrl = process.env["DISCORD_WEBHOOK_URL"];
-    if (webhookUrl) {
-      webhookClient = new WebhookClient({ url: webhookUrl });
-      logger.info("Webhook client initialized");
-    } else {
-      logger.warn("DISCORD_WEBHOOK_URL not set — reviews will fail");
-    }
-
-    await initChannel(readyClient);
-    await postReviewPanel();
+    await registerCommands(token, readyClient.user.id);
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
     try {
+      // Slash command: /postpanel — posts the panel in current channel
+      if (interaction.isChatInputCommand() && interaction.commandName === "postpanel") {
+        await interaction.reply({
+          embeds: [buildPanelEmbed()],
+          components: [buildPanelRow()],
+        });
+        return;
+      }
+
+      // Step 1: Button → show admin dropdown
       if (interaction.isButton() && interaction.customId === "start_review") {
         await handleStartReview(interaction);
         return;
       }
+
+      // Step 2: Admin selected → show rating dropdown
       if (interaction.isStringSelectMenu() && interaction.customId === "select_admin") {
         await handleSelectAdmin(interaction);
         return;
       }
+
+      // Step 3: Rating selected → show review text modal
       if (interaction.isStringSelectMenu() && interaction.customId === "select_rating") {
         await handleSelectRating(interaction);
         return;
       }
+
+      // Step 4: Review modal submitted → send embed via webhook
       if (interaction.isModalSubmit() && interaction.customId.startsWith("review_modal_")) {
         await handleReviewModal(interaction);
         return;
@@ -112,56 +146,19 @@ export function startBot() {
   });
 }
 
-async function initChannel(client: Client) {
+async function registerCommands(token: string, clientId: string) {
+  const command = new SlashCommandBuilder()
+    .setName("postpanel")
+    .setDescription("Išsiųsti atsiliepimų skydelį šiame kanale");
+
+  const rest = new REST().setToken(token);
   try {
-    const guild = await client.guilds.fetch(GUILD_ID);
-    const channel = await guild.channels.fetch(REVIEW_CHANNEL_ID);
-    if (channel && channel.isTextBased()) {
-      cachedReviewChannel = channel as TextChannel;
-      logger.info("Review channel cached successfully");
-    } else {
-      logger.error("Review channel not found or not text-based");
-    }
+    await rest.put(Routes.applicationGuildCommands(clientId, GUILD_ID), {
+      body: [command.toJSON()],
+    });
+    logger.info("Slash command /postpanel registered");
   } catch (err) {
-    logger.error({ err }, "Failed to cache review channel");
-  }
-}
-
-async function postReviewPanel() {
-  if (!cachedReviewChannel && !webhookClient) {
-    logger.error("Cannot post panel — no channel or webhook available");
-    return;
-  }
-  try {
-    const embed = new EmbedBuilder()
-      .setTitle("Administracijos Atsiliepimai")
-      .setDescription(
-        "Pasidalinkite savo atsiliepimu apie serverio administraciją!\n\n*Visi atsiliepimai padeda mums tobulėti!*"
-      )
-      .addFields({
-        name: "Kaip tai veikia:",
-        value:
-          "**1** Paspauskite mygtuką žemiau\n**2** Pasirinkite administratorių\n**3** Įvertinkite 1–5 žvaigždutėmis\n**4** Parašykite savo atsiliepimą",
-      })
-      .setFooter({ text: "Su pagarba, LUNARP.LT Serverio Administracija" })
-      .setColor(0x5865f2);
-
-    const button = new ButtonBuilder()
-      .setCustomId("start_review")
-      .setLabel("Palikti admin atsiliepimą")
-      .setStyle(ButtonStyle.Primary);
-
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(button);
-
-    // Try webhook first, fall back to cached channel
-    if (webhookClient) {
-      await webhookClient.send({ embeds: [embed], components: [row] });
-    } else {
-      await cachedReviewChannel!.send({ embeds: [embed], components: [row] });
-    }
-    logger.info("Review panel posted successfully");
-  } catch (err) {
-    logger.error({ err }, "Failed to post review panel");
+    logger.error({ err }, "Failed to register slash commands");
   }
 }
 
@@ -176,8 +173,6 @@ async function handleStartReview(interaction: import("discord.js").ButtonInterac
   await interaction.deferReply({ ephemeral: true });
 
   const allMembers = await guild.members.fetch();
-  logger.info({ memberCount: allMembers.size }, "Fetched guild members");
-
   const seen = new Set<string>();
   const adminMembers: { id: string; name: string }[] = [];
 
@@ -195,9 +190,7 @@ async function handleStartReview(interaction: import("discord.js").ButtonInterac
   logger.info({ adminCount: adminMembers.length }, "Admin members found");
 
   if (adminMembers.length === 0) {
-    await interaction.editReply({
-      content: "Nerasta jokių administratorių. Patikrinkite rolių pavadinimus.",
-    });
+    await interaction.editReply({ content: "Nerasta jokių administratorių." });
     return;
   }
 
@@ -279,7 +272,7 @@ async function handleSelectRating(interaction: import("discord.js").StringSelect
   await interaction.showModal(modal);
 }
 
-// Step 4: Review modal submitted → send embed via cached channel
+// Step 4: Review submitted → send via webhook
 async function handleReviewModal(interaction: import("discord.js").ModalSubmitInteraction) {
   const withoutPrefix = interaction.customId.replace("review_modal_", "");
   const colonIdx = withoutPrefix.lastIndexOf(":");
@@ -299,19 +292,19 @@ async function handleReviewModal(interaction: import("discord.js").ModalSubmitIn
   const stars = "⭐".repeat(rating);
 
   const embed = new EmbedBuilder()
-    .setTitle(`Atsiliepimas apie ${adminName}`)
-    .setDescription(reviewText)
+    .setTitle("📝 Administracijos Atsiliepimas")
     .addFields(
-      { name: "Įvertinimas", value: `${stars} (${rating}/5)`, inline: true },
-      { name: "Administratorius", value: `<@${adminId}>`, inline: true },
-      { name: "Atsiliepimą paliko", value: reviewerName, inline: true }
+      { name: "Apžvelgtas Administratorius", value: `<@${adminId}>`, inline: false },
+      { name: "Įvertinimas", value: stars, inline: false },
+      { name: "Atsiliepimas", value: reviewText, inline: false },
+      { name: "Pateikė", value: `<@${interaction.user.id}>`, inline: false }
     )
     .setColor(rating >= 4 ? 0x57f287 : rating === 3 ? 0xfee75c : 0xed4245)
+    .setFooter({ text: "LUNARP.LT Admin Reviews" })
     .setTimestamp();
 
-  // Send via webhook (bypasses channel permission restrictions)
   if (!webhookClient) {
-    await interaction.reply({ content: "Klaida: webhook nerastas. Kreipkitės į administratorių.", ephemeral: true });
+    await interaction.reply({ content: "Klaida: webhook nerastas.", ephemeral: true });
     return;
   }
 
