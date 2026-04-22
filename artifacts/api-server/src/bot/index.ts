@@ -16,18 +16,7 @@ import {
 import { logger } from "../lib/logger";
 
 const GUILD_ID = "1455214577334751428";
-const CATEGORY_ID = "1490789771478564924";
 const REVIEW_CHANNEL_ID = "1490789916995621050";
-
-const ADMIN_ROLES = [
-  "Įkūrėjas",
-  "Co.Savininkas",
-  "Developeris",
-  "Team Lead",
-  "Vyr. Administratorius (-ė)",
-  "Administratorius (-ė)",
-  "Moderatorius (-ė)",
-];
 
 const STAR_LABELS: Record<string, string> = {
   "1": "⭐ 1 Žvaigždutė — Labai blogai",
@@ -47,9 +36,7 @@ export function startBot() {
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildMembers,
       GatewayIntentBits.GuildMessages,
-      GatewayIntentBits.MessageContent,
     ],
   });
 
@@ -60,29 +47,27 @@ export function startBot() {
 
   client.on(Events.InteractionCreate, async (interaction) => {
     try {
+      // Step 1: Button → open modal to enter admin name
       if (interaction.isButton() && interaction.customId === "start_review") {
         await handleStartReview(interaction);
         return;
       }
 
-      if (
-        interaction.isStringSelectMenu() &&
-        interaction.customId === "select_admin"
-      ) {
-        await handleSelectAdmin(interaction);
+      // Step 2: Admin name modal submit → show rating dropdown
+      if (interaction.isModalSubmit() && interaction.customId === "admin_name_modal") {
+        await handleAdminNameModal(interaction);
         return;
       }
 
-      if (
-        interaction.isStringSelectMenu() &&
-        interaction.customId === "select_rating"
-      ) {
+      // Step 3: Rating dropdown → open modal for review text
+      if (interaction.isStringSelectMenu() && interaction.customId === "select_rating") {
         await handleSelectRating(interaction);
         return;
       }
 
+      // Step 4: Review text modal submit → send to channel
       if (interaction.isModalSubmit() && interaction.customId.startsWith("review_modal_")) {
-        await handleModalSubmit(interaction);
+        await handleReviewModal(interaction);
         return;
       }
     } catch (err) {
@@ -146,72 +131,35 @@ async function postReviewPanel(client: Client) {
   }
 }
 
+// Step 1: Show modal where user types the admin's nick
 async function handleStartReview(interaction: import("discord.js").ButtonInteraction) {
-  const guild = interaction.guild;
-  if (!guild) {
-    await interaction.reply({ content: "Klaida: serveris nerastas.", ephemeral: true });
-    return;
-  }
+  const modal = new ModalBuilder()
+    .setCustomId("admin_name_modal")
+    .setTitle("1/3: Pasirinkite administratorių");
 
-  await guild.members.fetch();
-  const adminMembers: { id: string; name: string }[] = [];
+  const adminInput = new TextInputBuilder()
+    .setCustomId("admin_name")
+    .setLabel("Administratoriaus nickname")
+    .setPlaceholder("Įrašykite administratoriaus Discord vardą...")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMinLength(1)
+    .setMaxLength(64);
 
-  for (const roleName of ADMIN_ROLES) {
-    const role = guild.roles.cache.find((r) => r.name === roleName);
-    if (!role) continue;
-    for (const [, member] of role.members) {
-      if (!adminMembers.find((m) => m.id === member.id)) {
-        adminMembers.push({
-          id: member.id,
-          name: member.displayName,
-        });
-      }
-    }
-  }
+  const row = new ActionRowBuilder<TextInputBuilder>().addComponents(adminInput);
+  modal.addComponents(row);
 
-  if (adminMembers.length === 0) {
-    await interaction.reply({
-      content: "Nerasta jokių administratorių su nurodytomis rolėmis.",
-      ephemeral: true,
-    });
-    return;
-  }
-
-  const options = adminMembers.slice(0, 25).map((m) =>
-    new StringSelectMenuOptionBuilder()
-      .setLabel(m.name)
-      .setValue(m.id)
-  );
-
-  const select = new StringSelectMenuBuilder()
-    .setCustomId("select_admin")
-    .setPlaceholder("Pasirinkite administratorių")
-    .addOptions(options);
-
-  const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
-
-  await interaction.reply({
-    content: "**1/3:** Pasirinkite administratorių, kurį norite įvertinti:",
-    components: [row],
-    ephemeral: true,
-  });
+  await interaction.showModal(modal);
 }
 
-async function handleSelectAdmin(interaction: import("discord.js").StringSelectMenuInteraction) {
-  const adminId = interaction.values[0];
-  const guild = interaction.guild;
-  if (!guild) return;
-
-  let adminName = adminId;
-  try {
-    const member = await guild.members.fetch(adminId);
-    adminName = member.displayName;
-  } catch {}
+// Step 2: After admin name entered → show rating dropdown
+async function handleAdminNameModal(interaction: import("discord.js").ModalSubmitInteraction) {
+  const adminName = interaction.fields.getTextInputValue("admin_name").trim();
 
   const options = [1, 2, 3, 4, 5].map((n) =>
     new StringSelectMenuOptionBuilder()
       .setLabel(STAR_LABELS[String(n)] ?? `${n} žvaigždutės`)
-      .setValue(`${adminId}__${adminName}__${n}`)
+      .setValue(`${encodeURIComponent(adminName)}__${n}`)
   );
 
   const select = new StringSelectMenuBuilder()
@@ -221,27 +169,29 @@ async function handleSelectAdmin(interaction: import("discord.js").StringSelectM
 
   const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
 
-  await interaction.update({
+  await interaction.reply({
     content: `**2/3:** Kaip įvertintumėte **${adminName}**?`,
     components: [row],
+    ephemeral: true,
   });
 }
 
+// Step 3: After rating selected → show review text modal
 async function handleSelectRating(interaction: import("discord.js").StringSelectMenuInteraction) {
-  const value = interaction.values[0];
-  const parts = value.split("__");
-  const adminId = parts[0];
-  const adminName = parts[1];
-  const rating = parts[2];
+  const value = interaction.values[0]!;
+  const separatorIdx = value.lastIndexOf("__");
+  const adminNameEncoded = value.substring(0, separatorIdx);
+  const rating = value.substring(separatorIdx + 2);
+  const adminName = decodeURIComponent(adminNameEncoded);
 
   const modal = new ModalBuilder()
-    .setCustomId(`review_modal_${adminId}__${adminName}__${rating}`)
+    .setCustomId(`review_modal_${adminNameEncoded}__${rating}`)
     .setTitle("Palikite Atsiliepimą");
 
   const textInput = new TextInputBuilder()
     .setCustomId("review_text")
     .setLabel("Jūsų atsiliepimas")
-    .setPlaceholder(`Parašykite savo atsiliepimą apie šį administratorių...`)
+    .setPlaceholder(`Parašykite savo atsiliepimą apie ${adminName}...`)
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(true)
     .setMinLength(10)
@@ -253,11 +203,13 @@ async function handleSelectRating(interaction: import("discord.js").StringSelect
   await interaction.showModal(modal);
 }
 
-async function handleModalSubmit(interaction: import("discord.js").ModalSubmitInteraction) {
-  const parts = interaction.customId.replace("review_modal_", "").split("__");
-  const adminId = parts[0];
-  const adminName = parts[1];
-  const rating = Number(parts[2]);
+// Step 4: Review text submitted → send embed to channel
+async function handleReviewModal(interaction: import("discord.js").ModalSubmitInteraction) {
+  const withoutPrefix = interaction.customId.replace("review_modal_", "");
+  const separatorIdx = withoutPrefix.lastIndexOf("__");
+  const adminNameEncoded = withoutPrefix.substring(0, separatorIdx);
+  const adminName = decodeURIComponent(adminNameEncoded);
+  const rating = Number(withoutPrefix.substring(separatorIdx + 2));
 
   const reviewText = interaction.fields.getTextInputValue("review_text");
   const reviewer = interaction.member as GuildMember | null;
@@ -270,7 +222,7 @@ async function handleModalSubmit(interaction: import("discord.js").ModalSubmitIn
     .setDescription(reviewText)
     .addFields(
       { name: "Įvertinimas", value: `${stars} (${rating}/5)`, inline: true },
-      { name: "Administratorius", value: `<@${adminId}>`, inline: true },
+      { name: "Administratorius", value: adminName, inline: true },
       { name: "Atsiliepimą paliko", value: reviewerName, inline: true }
     )
     .setColor(rating >= 4 ? 0x57f287 : rating === 3 ? 0xfee75c : 0xed4245)
