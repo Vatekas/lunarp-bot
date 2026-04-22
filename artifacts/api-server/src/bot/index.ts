@@ -13,7 +13,9 @@ import {
   Events,
   GuildMember,
   WebhookClient,
-  TextChannel,
+  REST,
+  Routes,
+  SlashCommandBuilder,
 } from "discord.js";
 import { logger } from "../lib/logger";
 
@@ -90,28 +92,26 @@ export function startBot() {
     ],
   });
 
-  const PANEL_CHANNEL_ID = "1490789916995621050";
-
   client.once(Events.ClientReady, async (readyClient) => {
     logger.info({ tag: readyClient.user.tag }, "Discord bot is ready");
-    try {
-      const channel = await readyClient.channels.fetch(PANEL_CHANNEL_ID);
-      if (channel instanceof TextChannel) {
-        await channel.send({
-          embeds: [buildPanelEmbed()],
-          components: [buildPanelRow()],
-        });
-        logger.info("Panel posted to channel on startup");
-      } else {
-        logger.warn("Panel channel not found or not a text channel");
-      }
-    } catch (err) {
-      logger.error({ err }, "Failed to post panel on startup");
-    }
+    await registerCommands(token, readyClient.user.id);
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
     try {
+      // Slash command: /postpanel — posts the panel in current channel
+      if (interaction.isChatInputCommand() && interaction.commandName === "postpanel") {
+        await interaction.deferReply({ ephemeral: true });
+        await interaction.deleteReply();
+        if (interaction.channel && "send" in interaction.channel) {
+          await interaction.channel.send({
+            embeds: [buildPanelEmbed()],
+            components: [buildPanelRow()],
+          });
+        }
+        return;
+      }
+
       // Step 1: Button → show admin dropdown
       if (interaction.isButton() && interaction.customId === "start_review") {
         await handleStartReview(interaction);
@@ -153,6 +153,22 @@ export function startBot() {
   client.login(token).catch((err) => {
     logger.error({ err }, "Failed to login to Discord");
   });
+}
+
+async function registerCommands(token: string, clientId: string) {
+  const command = new SlashCommandBuilder()
+    .setName("postpanel")
+    .setDescription("Išsiųsti atsiliepimų skydelį šiame kanale");
+
+  const rest = new REST().setToken(token);
+  try {
+    await rest.put(Routes.applicationGuildCommands(clientId, GUILD_ID), {
+      body: [command.toJSON()],
+    });
+    logger.info("Slash command /postpanel registered");
+  } catch (err) {
+    logger.error({ err }, "Failed to register slash commands");
+  }
 }
 
 // Step 1: Fetch members with admin roles → show dropdown
