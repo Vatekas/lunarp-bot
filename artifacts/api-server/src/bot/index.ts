@@ -71,6 +71,11 @@ export function startBot() {
     return;
   }
 
+  if (process.env["DISABLE_BOT"] === "true") {
+    logger.info("Bot disabled via DISABLE_BOT env var — skipping startup");
+    return;
+  }
+
   const webhookUrl = process.env["DISCORD_WEBHOOK_URL"];
   if (webhookUrl) {
     webhookClient = new WebhookClient({ url: webhookUrl });
